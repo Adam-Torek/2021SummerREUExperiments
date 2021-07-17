@@ -9,7 +9,12 @@
             "type": "python",
             "request": "launch",
             "program": "${file}",
-            "console": "integratedTerminal"
+            "console": "integratedTerminal",
+            "args": [
+                "-h", "h2",
+                "-i", "transactions/",
+                "-o", "output"
+            ]
         },
         {
             "name": "g++.exe - Build and debug active file",

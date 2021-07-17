@@ -1,137 +1,186 @@
-from csv import DictReader
+from collections import Counter
 import csv
 from enum import Enum
-import urllib.request, json
 import math
-    
-class transaction():
-    def __init__(self, hash, inputs, input_values, outputs, output_values, fee) -> None:
-        self.hash = hash
-        broke_outputs = outputs.split(':')
-        broke_output_vals = output_values.split(':')
-        broke_inputs = inputs.split(':')
-        broke_input_vals = input_values.split(':')
-
-        inputs = list()
-        outputs = list()
-
-        for i in range(len(broke_outputs)):
-            outputs.append(self.address(broke_outputs[i], broke_output_vals[i]))
-
-        for i in range(len(broke_inputs)):
-            inputs.append(self.address(broke_inputs[i], broke_input_vals[i]))
-
-        self.inputs = inputs
-        self.outputs = outputs
-        self.fee = fee
-
-    class address():
-        def __init__(self, address, amount) -> None:
-            self.address = address
-            self.amount = amount
+import transaction
+import os
+import re
+import sys
+import getopt
 
 class heuristic(Enum):
     h1 = 1
     h2 = 2
     h3 = 3
-    h4 = 4
 
 def digits(num):
     return int(math.log10(num))+2
 
-h = heuristic.h2
+def merge_or_create_cluster(source, addresses, c_num):
+    intersection = list(set(source) & set(clusters.keys()))
 
-transactions = list()
-with open('transactions.csv','r',newline='\n') as csvfile:
-    csv_reader = DictReader(csvfile)
-    for row in csv_reader:
-        transactions.append(transaction(row['transaction_hash'], row['input_addresses'], row['input_values'],
-        row['output_addresses'], row['output_values'], row['transaction_fee']))
+   # Cluster addresses together if any of the source 
+   # appear in our clusters
+    if intersection:
+         for a in addresses:
+            clusters[a] = clusters[intersection[0]]
+            
+    #Else, make a new cluster
+    else:
+        for a in addresses:
+            clusters[a] = 'c' + str(c_num)
+        c_num += 1
+    
+    #return the cluster number
+    return c_num
+
+def get_file_names(directory, pattern):
+    file_names = []
+    for (root, dirs, files) in os.walk(directory):
+        for file in files:
+            pattern = re.compile(pattern)
+            if pattern.match(file):
+                file_names.append(file)
+    return file_names
+
+#define variables for use
+dir = ""
+h = heuristic.h1
+output_dir = ""
+
+#parse arguments
+try:
+    opts, args = getopt.getopt(sys.argv[1:], "h:i:o:",["h=","input=","output="])
+except getopt.GetoptError:
+    print("heuristics.py -h <h1 h2 h3> -i <input dir> -o <output_dir>")
+    sys.exit(2)
+for opt, arg in opts:
+    if opt == "-h":
+        h = heuristic.h1
+
+        if arg == "h1":
+            h = heuristic.h1
+        elif arg == "h2":
+            h = heuristic.h2
+        elif arg == "h3":
+            h = heuristic.h3
+        else:
+            print("Improper heuristic command entered. Options are h1, h2, h3")
+            sys.exit(2)
+    elif opt in ("-i","--input"):
+        dir = arg
+        if not os.path.exists(dir):
+            print("Path does not exist. Exiting")
+            sys.exit(2)
+    elif opt in ("-o", "--output"):
+        output_dir = arg
+
+transactions = {}
+addresses = {}
+file_data = {}
+
+#get ou file names
+names = get_file_names(dir, "[0-9]{4}-[0-9]{2}-[0-9]{2}.csv$")
+
+if len(names) == 0:
+    print("No properly formatted CSV files found")
+    exit(1)
+
+# Pull out all relevant transaction data
+result = transaction.read_csv_file(dir, names, h == heuristic.h2)
+
+transactions = result[0]
+addresses = result[1]
+file_data = result[2]
 
 c_num = 0
 clusters = {}
 
-flagged_addrs = {}
+# apply our heuristics depending on which one the user specifies
+for k, t in transactions.items():
 
-for i in range(len(transactions)):
+    outputs = [o.address for o in t.outputs]
+    inputs = [i.address for i in t.inputs]
     if h == heuristic.h1:
-        outputs = transactions[i].outputs
-        inputs = transactions[i].inputs
         if len(outputs) == 1 and len(inputs) > 1:
-            in_addresses = list()
-            for i in range(len(inputs)):
-                in_addresses.append(inputs[i].address)
-            in_addresses.append(outputs[0].address)
-
-            clusters['c' + str(c_num)] = in_addresses
-            c_num += 1
-
+            address_list = inputs + outputs
+            c_num = merge_or_create_cluster(inputs, address_list, c_num)
     elif h == heuristic.h2:
-        if len(transactions[i].outputs) > 2 and len(transactions[i].inputs) > 2:
-            list_set = set(transactions[i].outputs)
-            check1 = list(list_set)
-            check2 = list()
-            if len(check1) > 0:
-                for a in check1:
-                    if a not in transactions[i].inputs:
-                        check2.append(a)
-                if len(check2) > 0: 
-                    flagged_addrs[a.address] = transactions[i].hash
-        elif len(transactions[i].outputs) == 2:
-            outputs = transactions[i].outputs
-            difference = digits(int(outputs[1].amount)) - digits(int(outputs[0].amount))
-            if difference > 3:
-                flagged_addrs[outputs[1].address] = transactions[i].hash
-            elif difference < -3:
-                flagged_addrs[outputs[0].address] = transactions[i].hash
 
-if h == heuristic.h2:
-    i = 0
-    change_addrs = {}
-    addr_string = ""
-    for a,v in flagged_addrs.items():
-        if((i % 50 == 0 or i == len(flagged_addrs)-1) and i != 0):
-            addr_string = addr_string[:-1]
-            with urllib.request.urlopen("https://blockchain.info/multiaddr?active=" + addr_string) as url:
-                data = json.loads(url.read().decode())
-                for m in data["addresses"]:
-                    if int(m["n_tx"]) <= 2:
-                        change_addrs[a] = v
-                addr_string = ""
-        else:
-            addr_string += a + "|"
-        i += 1
+        # case that transaction has only two outputs
 
-    for tx in transactions:
-        result = [a,v for x in change_addrs.items() if x in tx.inputs or x in tx.outputs]
-        if len(result) > 0:
-            clusters[c_num].append(result)
+        candidates = []
+        
 
-    
-
-for t in transactions:
-    if len(t.inputs) > 1 and len(t.outputs) > 1:
-        address_list = t.inputs
-        address_list.append(t.outputs)
-        for i in address_list:
-            result = [k for k,v in clusters.items() for x in v if x == i.address]
-            if len(result) == 1:
-                i.address = result[0]
-            elif len(result) > 1:
-                largest = result[0]
-                for j in result:
-                    if len(clusters[j]) > len(clusters[largest]):
-                        largest = j
-                i.address = largest
+        if len(outputs) == 2 and len(inputs) == 1:
+            decimals = digits(int(t.outputs[0].amount)) - digits(int(t.outputs[1].amount))
+            change_address = None
+            if(decimals > 3):
+                change_address = outputs[0]
+            elif(decimals < -3):
+                change_address = outputs[1]
             else:
                 continue
 
+            if change_address is not None and len(addresses[change_address]) < 2 and addresses[change_address][0] == False:
+                candidates.append(change_address)
 
-with open('transactions_'+str(h)+'.csv','w') as output:
-    wtr = csv.writer(output)
-    for t in transactions:
-        out_amount = ""
-        out_addrs = ""
+        #Else use the normal rules described for H2 to get clusters
+
+        elif len(outputs) > 2 and len(inputs) == 1:
+            counts = dict(Counter(outputs))
+            candidates = [k for k,v in counts.items() if v <= 1]
+            candidates = [x for x in candidates if x not in inputs and len(addresses[x]) <= 2 and addresses[x][0] == False]
+            
+        #If we have potential change address candidates, run this
+        if candidates:
+            c_num = merge_or_create_cluster(inputs, candidates, c_num)
+   
+    elif h == heuristic.h3:
+        if len(inputs) == 0:
+            c_num = merge_or_create_cluster(outputs, outputs, c_num)
+
+# Apply clusters to many-to-many transactions  
+for v in transactions.values():
+    if len(v.inputs) > 1 and len(v.outputs) > 1:
+        address_list = v.inputs + v.outputs
+        for a in address_list:
+            if a.address in clusters.keys():
+                a.address = clusters[a.address]
+
+#Output data as CSV files
+mode = ""
+if h == heuristic.h1:
+    mode = "h1"
+elif h == heuristic.h2:
+    mode = "h2"
+else:
+    mode = "h3"
+
+if(not os.path.exists(output_dir + mode + "/")):
+    os.makedirs(output_dir + mode + "/")
+
+for name, l in file_data.items():
+    with open(output_dir+ mode + "/" + name + '.csv','w') as output:
+        header = ["transaction_hash","input_addresses","input_values","output_addresses","output_values","transaction_fee", "classification"]
+        wtr = csv.DictWriter(output, fieldnames=header, lineterminator='\n')
+        wtr.writeheader()
+
+        j = 0
+        for k, v in transactions.items():
+            if(j == l):
+                output.close()
+                break
+            
+            inputs = ':'.join([x.address for x in v.inputs])
+            input_amounts = ':'.join([str(x.amount) for x in v.inputs])
+            outputs =  ':'.join([x.address for x in v.outputs])
+            output_amounts = ':'.join([str(x.amount) for x in v.outputs])
+            
+
+            wtr.writerow({"transaction_hash": k, "input_addresses": inputs, "input_values" : input_amounts,
+            "output_addresses": outputs, "output_values": output_amounts, "transaction_fee" : v.fee, "classification": "unclassified"})
+            j += 1
         
 
 
